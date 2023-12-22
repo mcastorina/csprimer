@@ -1,13 +1,15 @@
 use anyhow::Error;
+use core::future::Future;
 use http_body_util::{Either, Empty};
 use hyper::{
     body::{Body, Bytes, Incoming},
     client::conn::http1 as client,
     server::conn::http1 as server,
-    service::service_fn,
+    service::Service,
     Request, Response, StatusCode,
 };
 use hyper_util::rt::tokio::TokioIo;
+use std::pin::Pin;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
@@ -30,7 +32,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // HTTP requests received on that connection to the `proxy` function.
             if let Err(err) = server::Builder::new()
                 .preserve_header_case(true)
-                .serve_connection(io, service_fn(proxy))
+                .serve_connection(io, Proxy {})
                 .await
             {
                 println!("Error serving connection: {:?}", err);
@@ -78,4 +80,21 @@ where
     println!(" <- *    {}", resp.status());
     // Return the response from the upstream to the downstream client.
     Ok(resp.map(Either::Right))
+}
+
+struct Proxy {}
+
+impl<H> Service<Request<H>> for Proxy
+where
+    H: Body + Send + 'static,
+    <H as Body>::Data: Send,
+    <H as Body>::Error: std::error::Error + Sync + Send,
+{
+    type Response = Response<Either<Empty<Bytes>, Incoming>>;
+    type Error = Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn call(&self, req: Request<H>) -> Self::Future {
+        Box::pin(proxy(req))
+    }
 }
